@@ -4,6 +4,20 @@
 #include <string.h>
 #include "blockchain.h"
 
+bool Transaction_verify(const Transaction *t) {
+    // assume block reward has been filtered out.
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, t->sender, PK_SIZE);
+
+    EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+    if (!EVP_DigestVerifyInit_ex(md_ctx, NULL, NULL, NULL, NULL, pkey, NULL)) {
+        fprintf(stderr, "cannot init\n");
+    }
+    int ans = EVP_DigestVerify(md_ctx, (const uint8_t *)t->signature, SIGNATURE_SIZE, (const uint8_t *)t, sizeof(Transaction) - SIGNATURE_SIZE);
+
+    EVP_MD_CTX_free(md_ctx);
+    return (bool)ans;
+}
+
 void Block_sha256_hash(const Block *b, uint8_t *dst) {
 
     if (!EVP_DigestInit_ex(ctx, sha256, NULL)) {
@@ -37,30 +51,6 @@ void Block_init(Block *b, uint32_t index, double timestamp) {
     memset(b->previous_hash, 0, sizeof(b->previous_hash));
 }
 
-void Block_print(const Block* b, FILE *file) {
-    fprintf(file, "Block No. %u\n", b->index);
-    fprintf(file, "  - Timestamp: %lf\n", b->timestamp);
-    fprintf(file, "  - %u Transaction(s) \n", b->num_transactions);
-    for (uint32_t i = 0; i < b->num_transactions; i++) {
-        fprintf(file, "    ");
-        for (int j = 0; j < WALLET_ID_SIZE; j++) {
-            fprintf(file, "%02x", BLOCK_TRANSACTIONS_P(b)[i].sender[j]);
-        }
-        fprintf(file, " -> ");
-        for (int j = 0; j < WALLET_ID_SIZE; j++) {
-            fprintf(file, "%02x", BLOCK_TRANSACTIONS_P(b)[i].recipient[j]);
-        }
-        fprintf(file, ": $%llu\n", BLOCK_TRANSACTIONS_P(b)[i].amount);
-    }
-    fprintf(file, "  - previous_hash:\t");
-    for (int i = 0; i < DIGEST_SIZE; i++)
-        fprintf(file, "%02x ", b->previous_hash[i]);
-
-    fprintf(file, "\n  - prove of work:\t");
-    for (int i = 0; i < POW_LOT_SIZE; i++)
-        fprintf(file, "%02x ", b->proof[i]);
-    fprintf(file, "\n\n");
-}
 
 int Block_prove_of_work_trial(Block* b, const uint8_t* proof, uint8_t* digest) {
     memcpy(b->proof, proof, sizeof(b->proof));
@@ -132,24 +122,6 @@ int BlockChain_init(BlockChain *c, bool genesis) {
     return 0;
 }
 
-void BlockChain_print(BlockChain* c, FILE* file) {
-    ChainNode *cn = c->head;
-    fprintf(file, "Block Chain\t\t");
-    for (int i = 0; i < DIGEST_SIZE; i++)
-        fprintf(file, "%02x ", c->last_hash[i]);
-    fprintf(file, "\n");
-    while (cn != NULL) {
-        Block_print(&cn->block, file);
-        if (cn->prev != NULL) {
-            fprintf(file, "\t\t\t\t\t\t\t/\\\n\t\t\t\t\t\t\t||\n\n");
-            cn = cn->prev;
-        } else {
-            break;
-        }
-    }
-
-}
-
 void BlockChain_add_block(BlockChain *c, const Block *block) {
     pthread_mutex_lock(&c->mutex);
 
@@ -186,13 +158,16 @@ ssize_t BlockChain_verify(BlockChain *c) {
         for (size_t i = 0; i < ptr->block.num_transactions; i++) {
             bool is_reward = true;
             Transaction *tr = BLOCK_TRANSACTIONS_P(&ptr->block) + i;
-            for (int j = 0; j < WALLET_ID_SIZE; j++) {
+            for (int j = 0; j < PK_SIZE; j++) {
                 if (tr->sender[j] != 0) {
                     is_reward = false;
                     break;
                 }
             }
-            if (!is_reward) continue;
+            if (!is_reward) {
+                if (!Transaction_verify(tr)) goto failed;
+                continue;
+            }
             if (tr->amount != 1) goto failed;
             if (node_rewarded) goto failed;
             node_rewarded = true;

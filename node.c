@@ -1,5 +1,8 @@
 #include <string.h>
 #include <sys/time.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <assert.h>
 #include "node.h"
 
 
@@ -10,11 +13,36 @@ void Node_delete(Node *m) {
     pthread_mutex_lock(&m->new_block_mutex);
     free(m);
 }
-void Node_init(Node *m, BlockChain *block_chain, const uint8_t *id) {
+
+void Node_set_key(Node *m, const char *private_key_filename) {
+
+    FILE *sk_file = fopen(private_key_filename, "r");
+    
+    if (!sk_file) {
+        fprintf(stderr, "Unable to open file\n");
+        exit(-1);
+    }
+
+    EVP_PKEY *private_key = PEM_read_PrivateKey(sk_file, NULL, NULL, NULL);
+    if (!private_key || EVP_PKEY_get_id(private_key) != NID_ED25519) {
+        fprintf(stderr, "Invalid key format\n");
+        exit(-1);
+    }
+    size_t len = PK_SIZE;
+    EVP_PKEY_get_raw_public_key(private_key, (uint8_t *)m->id, &len);
+    EVP_PKEY_print_private_fp(stdout, private_key, 0, NULL);
+    m->pkey = private_key;
+
+    fclose(sk_file);
+
+}
+
+void Node_init(Node *m, BlockChain *block_chain, const char *key) {
     m->block_chain = block_chain;
-    if (id != NULL) {
+
+    if (key != NULL) {
         pthread_mutex_init(&m->new_block_mutex, NULL);
-        memcpy((uint8_t *)m->id, id, sizeof(m->id));
+        Node_set_key(m, key);
     }
 
     struct timeval tv;
@@ -35,15 +63,48 @@ void Node_init(Node *m, BlockChain *block_chain, const uint8_t *id) {
     Node_add_transaction(m, &block_reward);
 }
 
-int Node_add_transaction(Node *m, const Transaction *transaction) {
+ssize_t Node_add_transaction(Node *m, const Transaction *transaction) {
     pthread_mutex_lock(&m->new_block_mutex);
     if (m->new_block.hdr.num_transactions >= MAX_TRANSACTIONS) {
         pthread_mutex_unlock(&m->new_block_mutex);
         return -1;
     }
+    ssize_t tid = m->new_block.hdr.num_transactions;
     m->new_block.transactions[m->new_block.hdr.num_transactions++] = *transaction;
+    m->new_block.transactions[tid].index = MAX_TRANSACTIONS * m->new_block.hdr.index + tid;
+    memset(m->new_block.transactions[tid].signature, 0, SIGNATURE_SIZE);
+    pthread_mutex_unlock(&m->new_block_mutex);
+    return MAX_TRANSACTIONS * m->new_block.hdr.index + tid;
+}
+
+int Node_set_signature(Node *m, uint32_t id, const uint8_t *signature) {
+    pthread_mutex_lock(&m->new_block_mutex);
+    uint8_t prev_signature[SIGNATURE_SIZE];
+    memcpy(prev_signature, m->new_block.transactions[id - MAX_TRANSACTIONS * m->new_block.hdr.index].signature, SIGNATURE_SIZE);
+    memcpy(m->new_block.transactions[id - MAX_TRANSACTIONS * m->new_block.hdr.index].signature, signature, SIGNATURE_SIZE);
+    if (!Transaction_verify(&m->new_block.transactions[id - MAX_TRANSACTIONS * m->new_block.hdr.index])) {
+        memcpy(m->new_block.transactions[id - MAX_TRANSACTIONS * m->new_block.hdr.index].signature, prev_signature, SIGNATURE_SIZE);
+        pthread_mutex_unlock(&m->new_block_mutex);
+        return -1;
+    }
     pthread_mutex_unlock(&m->new_block_mutex);
     return 0;
+}
+
+void Node_sign(const Node *m, Transaction *transaction) {
+    EVP_PKEY *pkey = m->pkey;
+
+    EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+    if (!EVP_DigestSignInit_ex(md_ctx, NULL, NULL, NULL, NULL, pkey, NULL)) {
+        fprintf(stderr, "cannot init\n");
+    }
+    size_t len = SIGNATURE_SIZE;
+    if (!EVP_DigestSign(md_ctx, (uint8_t *)transaction->signature, &len, (const uint8_t *)transaction, sizeof(Transaction) - SIGNATURE_SIZE)) {
+        fprintf(stderr, "cannot sign\n");
+    }
+
+    EVP_MD_CTX_free(md_ctx);
+
 }
 
 int Node_add_block(Node *m, const uint8_t *hash) {

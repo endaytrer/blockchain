@@ -7,17 +7,22 @@
 #include <openssl/evp.h>
 #include <pthread.h>
 
-#define WALLET_ID_SIZE 16 
+#define PK_SIZE 32 
+#define SIGNATURE_SIZE 64
 #define POW_LOT_SIZE 8
 #define DIGEST_SIZE 32
 #define PREFIX_ZEROS 16
 #define MAX_TRIALS (1UL << (2 * PREFIX_ZEROS))
 
-typedef struct {
-    uint8_t sender[WALLET_ID_SIZE];
-    uint8_t recipient[WALLET_ID_SIZE];
+typedef struct __attribute__((packed)) {
+    uint8_t sender[PK_SIZE];
+    uint8_t recipient[PK_SIZE];
     uint64_t amount;
+    uint32_t fee;
+    uint32_t index;
+    uint8_t signature[SIGNATURE_SIZE];
 } Transaction;
+
 
 #define BLOCK_HEADER_SIZE (sizeof(Block))
 #define BLOCK_SIZE(block_p) (BLOCK_HEADER_SIZE + (block_p)->num_transactions * sizeof(Transaction))
@@ -49,11 +54,11 @@ typedef struct {
 // We test many bytes to be zero, so PREFIX_ZEROS should be divisible by 8.
 _Static_assert((PREFIX_ZEROS & 0x7) == 0, "PREFIX_ZEROS should be divisible by 8");
 
+bool Transaction_verify(const Transaction *t);
+
 Block *Block_new(uint32_t num_transactions);
 void Block_delete(Block *b);
 void Block_init(Block *b, uint32_t index, double timestamp);
-void Block_print(const Block *b, FILE *file);
-void Block_sha256_hash(const Block *b, uint8_t *dst);
 int Block_prove_of_work_trial(Block *b, const uint8_t *proof, uint8_t *digest);
 // also support proof_start for parallel computing
 int Block_mine(Block *b, size_t max_trials, const uint8_t *proof_start, uint8_t *digest);
@@ -63,7 +68,6 @@ void BlockChain_delete(BlockChain *c);
 
 // NO THREAD SAFETY, make sure to call it only in initialization.
 int BlockChain_init(BlockChain *c, bool genesis);
-void BlockChain_print(BlockChain *c, FILE *file);
 void BlockChain_add_block(BlockChain *c, const Block *block);
 
 /**

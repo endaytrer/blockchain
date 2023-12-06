@@ -6,7 +6,8 @@
 
 typedef struct {
     BlockChain *block_chain; // use pointer to allow multiple
-    const uint8_t id[WALLET_ID_SIZE];
+    const uint8_t id[PK_SIZE];
+    EVP_PKEY *pkey;
     pthread_mutex_t new_block_mutex;
     __attribute__((packed)) struct { // use packed to ensure transactions is follow compactly after header
         Block hdr; // embed num_transaction into block header.
@@ -18,10 +19,12 @@ Node *Node_new(void);
 void Node_delete(Node *m);
 // if id is set, it works like initialization
 // else, it changes the blockchain in m.
-void Node_init(Node *m, BlockChain *block_chain, const uint8_t *id);
+void Node_init(Node *m, BlockChain *block_chain, const char *key);
 
-int Node_add_transaction(Node *m, const Transaction *transaction);
+ssize_t Node_add_transaction(Node *m, const Transaction *transaction);
+int Node_set_signature(Node *m, uint32_t id, const uint8_t *signature);
 
+void Node_sign(const Node *m, Transaction *transaction);
 // No validation of whether hash is valid.
 int Node_mine(Node *m, size_t max_trials, const uint8_t *proof_start);
 int Node_add_block(Node *m, const uint8_t *hash);
