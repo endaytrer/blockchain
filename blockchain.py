@@ -7,7 +7,7 @@ import random
 import argparse
 import requests
 
-dylib = CDLL("libblockchain.so")
+dylib = CDLL("./libblockchain.so")
 
 parser = argparse.ArgumentParser('blockchain.py')
 
